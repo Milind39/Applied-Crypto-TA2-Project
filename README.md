@@ -46,10 +46,11 @@ flowchart LR
     API["REST API + Auth\nHelmet, CORS, Rate Limit, Double-Submit CSRF"]
     WS["Socket.IO Ciphertext & Handshake Relay"]
     CA["ML-DSA-65 Certificate Authority + CRL"]
+    EMAIL["Nodemailer\nGmail SMTP Verification & Reset"]
   end
 
   subgraph DB["MariaDB (:3306 / pqmessenger)"]
-    PG[("users, certificates, conversations,\nmessages (ciphertext only), sessions,\nkey_backups, password_resets")]
+    MDB[("users, verification_tokens, certificates,\nconversations, messages (ciphertext only),\nsessions, key_backups, password_resets")]
   end
 
   BrowserA -- "Ciphertext + Signed Handshakes" --> API
@@ -57,8 +58,9 @@ flowchart LR
   BrowserB -- "Ciphertext + Signed Handshakes" --> API
   BrowserB -- "Real-time Socket.IO" --> WS
   API --> CA
-  API --> PG
-  WS --> PG
+  API --> EMAIL
+  API --> MDB
+  WS --> MDB
 ```
 
 ### Mutually Authenticated Handshake
@@ -94,11 +96,13 @@ sequenceDiagram
 
 - **Real Post-Quantum Cryptography:** Uses `@oqs/liboqs-js` (liboqs compiled to WebAssembly) for `ML-DSA-65` and `ML-KEM-768` — no mocked encryption or classical substitution.
 - **Trusted Certificate Authority & CRL:** Dedicated server-side ML-DSA-65 CA issues signed JSON certificates, tracks expiration, maintains a Certificate Revocation List (`GET /api/certificates/crl`), and rejects revoked/expired certificates.
-- **Zero-Knowledge Relay & Storage:** Both `POST /api/messages` and Socket.IO `message:send` reject payloads containing `plaintext`. PostgreSQL stores only ciphertext, nonces, tags, and routing metadata.
-- **Replay & Tamper Protection:** AES-256-GCM binds canonicalized `{ seq, senderId, timestamp }` AAD; both client (`ReplayProtector`) and server (monotonic `sequence_number` + unique `messageId` + PostgreSQL partial unique index) reject replayed or modified messages.
-- **Encrypted Key Backup & Recovery:** Private signing keys are kept in IndexedDB (`pq-messenger-keystore`) and optionally backed up encrypted with a PBKDF2-SHA-256 + AES-256-GCM key derived from the user's password.
+- **Zero-Knowledge Relay & Storage:** Both `POST /api/messages` and Socket.IO `message:send` reject payloads containing `plaintext`. MariaDB stores only ciphertext, nonces, tags, and routing metadata.
+- **Replay & Tamper Protection:** AES-256-GCM binds canonicalized `{ seq, senderId, timestamp }` AAD; both client (`ReplayProtector`) and server (monotonic `sequence_number` + unique `messageId` + MariaDB duplicate detection) reject replayed or modified messages.
+- **Encrypted Key Backup & Session Persistence:** Private signing keys, directional AES-256-GCM session keys, and sequence numbers persist in IndexedDB (`pq-messenger-keystore`) across tab refreshes. Identity keys can also be backed up encrypted with PBKDF2-SHA-256 + AES-256-GCM.
+- **Mandatory Email Verification:** Requires email verification before allowing user login or socket connection. Accounts must verify via a time-limited email link sent via Gmail SMTP before accessing chat features.
+- **Secure Password Reset:** Time-limited 15-minute reset tokens delivered exclusively via email with direct 1-click links (`/reset-password?token=...&email=...`), terminating all active sessions on password change.
+- **Immediate Real-time Synchronization:** Senders see their own messages render immediately in active chat and conversation sidebar, with real-time status transitions (`sending` -> `sent` -> `delivered` -> `read`).
 - **Web Hardening:** Argon2id password hashing, HttpOnly `SameSite=Strict` JWT cookies + active session tracking, strict `crypto.timingSafeEqual` double-submit CSRF protection, Helmet headers, CORS, and rate limiting.
-- **Cybersecurity-Themed Responsive UI:** Landing page, registration with live PQ keygen progress, login with encrypted key recovery, password reset, user discovery & real-time chat dashboard, and Security Details inspector (`/security`).
 
 ---
 
@@ -113,12 +117,13 @@ Applied-Crypto-TA2-Project/
 │   ├── cryptography.md                 # Sequence diagrams, key sizes, KDF, AEAD & CRL specs
 │   └── threat-model.md                 # Assets, trust boundaries, mitigations & limitations
 ├── server/                             # Node.js + Express 5 + Socket.IO + TypeScript (:4000)
+│   ├── .env.example                    # Template for environment variables and secrets
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── src/
 │   │   ├── index.ts                    # Express + Socket.IO bootstrap
-│   │   ├── config.ts                   # Port, JWT, CORS, and PostgreSQL configuration
-│   │   ├── db.ts                       # PostgreSQL pool & schema initialization
+│   │   ├── config.ts                   # Port, JWT, CORS, MariaDB & Nodemailer configuration
+│   │   ├── db.ts                       # MariaDB pool & schema initialization
 │   │   ├── socket.ts                   # Authenticated Socket.IO relay
 │   │   ├── ca/
 │   │   │   └── certificate-authority.ts # ML-DSA-65 CA issuance, verification & CRL
@@ -126,9 +131,10 @@ Applied-Crypto-TA2-Project/
 │   │   │   ├── auth.ts                 # JWT + active-session authentication
 │   │   │   └── security.ts             # Helmet, CORS, rate limiters & strict CSRF
 │   │   ├── services/
+│   │   │   ├── emailService.ts         # Nodemailer Gmail SMTP for verification & reset
 │   │   │   └── messageService.ts       # Participant checks, replay guard & ciphertext storage
 │   │   └── routes/
-│   │       ├── auth.ts                 # Register, login, logout, refresh, me, password reset
+│   │       ├── auth.ts                 # Register, email verification, login, logout, password reset
 │   │       ├── users.ts                # User search & profile lookup
 │   │       ├── certificates.ts         # CA public key, cert issue/verify/revoke & CRL
 │   │       ├── conversations.ts        # Conversations & paginated encrypted history
@@ -140,16 +146,16 @@ Applied-Crypto-TA2-Project/
     ├── package.json
     ├── vite.config.ts                  # /api & /socket.io proxy to :4000
     └── src/
-        ├── App.tsx                     # Routes: /, /register, /login, /reset-password, /dashboard, /security
+        ├── App.tsx                     # Protected routes: /, /register, /login, /verify-email, /reset-password, /dashboard, /security
         ├── crypto/
         │   ├── pq-crypto.ts            # @oqs/liboqs-js ML-DSA-65 & ML-KEM-768 WASM wrappers
         │   ├── symmetric.ts            # HKDF-SHA-256 & AES-256-GCM with canonicalized AAD
         │   ├── handshake.ts            # Authenticated ML-KEM-768 handshake & ReplayProtector
-        │   └── key-management.ts       # IndexedDB keystore & PBKDF2 encrypted key backup
+        │   └── key-management.ts       # IndexedDB keystore & session key persistence
         ├── contexts/                   # AuthContext, CryptoContext, SocketContext
         ├── services/                   # REST API client (with CSRF handling) & Socket.IO client
         ├── components/                 # Chat UI, CertificateViewer, EncryptionBadge, UserSearch
-        └── pages/                      # Landing, Register, Login, PasswordReset, Dashboard, Security
+        └── pages/                      # Landing, Register, Login, VerifyEmail, PasswordReset, Dashboard, Security
 ```
 
 ---
@@ -159,37 +165,79 @@ Applied-Crypto-TA2-Project/
 ### Prerequisites
 
 - **Node.js** v20+ (tested on Node v24) & `npm`
-- **MariaDB** 10.7+ / 11+ (tested on MariaDB 11.8)
+- **MariaDB** 10.7+ / 11+ (running locally on port `3306`)
 
 ### 1. Database Setup (MariaDB)
 
-By default, [`server/src/config.ts`](server/src/config.ts) and [server/.env](server/.env) connect to a MariaDB database named `pqmessenger`:
+Start your local MariaDB service manually:
+
+```bash
+# On Linux / WSL:
+sudo systemctl start mariadb
+# Or on Windows:
+net start MariaDB
+```
+
+Create the database and database user (if not already existing):
+
+```sql
+CREATE DATABASE IF NOT EXISTS pqmessenger;
+CREATE USER IF NOT EXISTS 'toji'@'127.0.0.1' IDENTIFIED BY 'toji123';
+GRANT ALL PRIVILEGES ON pqmessenger.* TO 'toji'@'127.0.0.1';
+FLUSH PRIVILEGES;
+```
+
+On server startup, `initDatabase()` in [`server/src/db.ts`](server/src/db.ts) automatically creates all 8 tables (`users`, `verification_tokens`, `certificates`, `conversations`, `messages`, `sessions`, `key_backups`, `password_resets`) and indexes.
+
+### 2. Configure Environment (`server/.env`)
+
+Copy the sample environment file in `server/`:
+
+```bash
+cp server/.env.example server/.env
+```
+
+Ensure the configuration matches your local setup:
 
 ```env
+PORT=4000
+JWT_SECRET=your-secure-jwt-secret-at-least-32-characters
+CORS_ORIGIN=http://localhost:3000
+
+# MariaDB Configuration
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_USER=toji
 DB_PASSWORD=toji123
 DB_NAME=pqmessenger
+
+# Nodemailer / Gmail SMTP Configuration
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_gmail_app_password
+EMAIL_FROM=your_email@gmail.com
+
+# Frontend URL
+FRONTEND_URL=http://localhost:3000
+
+# Feature Flags
+REQUIRE_EMAIL_VERIFICATION=true
 ```
 
-On startup, `initDatabase()` in [`server/src/db.ts`](server/src/db.ts) automatically starts MariaDB in WSL if needed, and creates all 7 tables (`users`, `certificates`, `conversations`, `messages`, `sessions`, `key_backups`, `password_resets`) and indexes.
-
-### 2. Install & Run Backend (`server/`)
+### 3. Install & Run Backend (`server/`)
 
 ```bash
 cd server
 npm install
-npm run dev        # Starts Express + Socket.IO + ML-DSA-65 CA on http://localhost:4000
+npm run dev        # Starts Express + Socket.IO + ML-DSA-65 CA on http://localhost:4000 with nodemon
 ```
 
 Production build:
 
 ```bash
-npx tsc --noEmit && npm run build && npm start
+npm run build && npm start
 ```
 
-### 3. Install & Run Frontend (`client/`)
+### 4. Install & Run Frontend (`client/`)
 
 In a second terminal:
 
@@ -199,10 +247,10 @@ npm install
 npm run dev        # Starts Vite dev server on http://localhost:3000
 ```
 
-Production check:
+Production build:
 
 ```bash
-npx tsc --noEmit && npm run build
+npm run build
 ```
 
 ---
@@ -231,16 +279,21 @@ The suite verifies **9 end-to-end security & cryptographic scenarios**:
 
 ## Two-User Demo Walkthrough (Alice & Bob)
 
-Because IndexedDB and cookies are shared across tabs in a single browser profile, use **two separate browser profiles** (e.g., normal browser window + Incognito/Private window or a second browser):
+Because IndexedDB and cookies are isolated per browser profile, use **two separate browser profiles** (e.g., normal browser window + Incognito/Private window or two different browsers):
 
-1. **Window A (Alice):** Open `http://localhost:3000/register` and register `alice`. Client-side WASM generates an ML-DSA-65 keypair, obtains a CA certificate, stores the secret key in IndexedDB, and uploads an encrypted backup.
-2. **Window B (Bob):** Open `http://localhost:3000/register` in an isolated browser session and register `bob`.
+1. **Window A (Alice):**
+   - Open `http://localhost:3000/register` and register `alice`.
+   - Check your inbox for the email verification link (or use the displayed link) to activate the account.
+   - Sign in at `http://localhost:3000/login`. Client-side WASM generates an ML-DSA-65 keypair, obtains a CA certificate, and stores the keys in IndexedDB.
+2. **Window B (Bob):**
+   - Open `http://localhost:3000/register` in an isolated browser session and register `bob`.
+   - Complete email verification and sign in.
 3. **Inspect Security Details:** Visit `/security` in either window to view the public key fingerprint, CA signature verification, certificate validity, and CRL status.
-4. **Discover & Handshake:** From Alice's Dashboard, search for `bob` and open a conversation. Click **Establish PQ Session** (or **Start ML-KEM Handshake**) while both users are online until the badge reads **PQ E2EE Active**.
-5. **Exchange Encrypted Messages:** Send messages in both directions between Alice and Bob and verify real-time decryption, sequence numbers, and delivery/read receipts.
+4. **Discover & Handshake:** From Alice's Dashboard, search for `bob` and open the conversation. Click **Establish PQ Session** (or **Start ML-KEM Handshake**) while both users are online until the badge reads **PQ E2EE Active**.
+5. **Exchange Encrypted Messages:** Send messages in both directions between Alice and Bob and verify real-time decryption, sequence numbers, and delivery/read receipts. Keys persist across tab refreshes.
 6. **Verify Zero-Knowledge Database Storage:**
    ```bash
-   psql -d pqmessenger -c "SELECT id, sequence_number, left(ciphertext, 32) AS ct_prefix, left(nonce, 16) AS iv, left(tag, 16) AS tag FROM messages;"
+   mariadb -u toji -ptoji123 pqmessenger -e "SELECT id, sequence_number, LEFT(ciphertext, 32) AS ct_prefix, LEFT(nonce, 16) AS iv, LEFT(tag, 16) AS tag FROM messages;"
    ```
 
 ---
