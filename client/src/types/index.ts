@@ -2,6 +2,7 @@ export interface User {
   id: string;
   username: string;
   email: string;
+  isEmailVerified?: boolean;
   is_online: boolean;
   last_seen: string;
   created_at?: string;

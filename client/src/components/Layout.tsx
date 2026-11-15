@@ -84,10 +84,19 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           </div>
 
           {user && (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
               <span className="text-xs sm:text-sm font-medium text-gray-300">
                 @{user.username}
               </span>
+              {user.isEmailVerified ? (
+                <span className="text-[10px] text-emerald-400 font-mono hidden sm:inline" title="Email Verified">
+                  ✓ Verified
+                </span>
+              ) : (
+                <span className="text-[10px] text-amber-400 font-mono hidden sm:inline" title="Email Not Verified">
+                  Pending Verify
+                </span>
+              )}
               <button
                 type="button"
                 onClick={handleLogout}

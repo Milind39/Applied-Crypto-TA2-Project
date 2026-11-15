@@ -10,9 +10,12 @@ client/dist/
 
 # Environment & secrets
 .env
-.env.*
-*.pem
-*.key
+.env.local
+.env.*.local
+server/.env
+client/.env
+!.env.example
+!server/.env.example
 
 # Logs & OS files
 *.log

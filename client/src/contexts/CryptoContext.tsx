@@ -19,6 +19,10 @@ import {
   encryptPrivateKeyForBackup,
   loadIdentityFromIndexedDB,
   saveIdentityToIndexedDB,
+  loadAllSessionKeysFromIndexedDB,
+  saveSessionKeysToIndexedDB,
+  updateSessionSequenceInIndexedDB,
+  deleteSessionKeyFromIndexedDB,
 } from '../crypto/key-management';
 import {
   completeHandshakeInitiation,
@@ -144,7 +148,7 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
     refreshCAInfo().catch(() => {});
   }, [initializeCryptoModule, refreshCAInfo]);
 
-  // Restore identity from IndexedDB when session exists, clear on logout
+  // Restore identity & persisted session keys from IndexedDB when session exists, clear on logout
   useEffect(() => {
     if (!isAuthenticated || !user) {
       setCryptoIdentity(null);
@@ -160,6 +164,38 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
         if (loaded) setCryptoIdentity(loaded);
       })
       .catch(() => {});
+
+    // Restore persistent post-quantum session keys across tab refreshes
+    loadAllSessionKeysFromIndexedDB(user.id)
+      .then((restoredSessions) => {
+        if (restoredSessions.size > 0) {
+          setSessionKeys((prev) => {
+            const next = new Map(prev);
+            for (const [convId, s] of restoredSessions.entries()) {
+              next.set(convId, s);
+            }
+            return next;
+          });
+          setHandshakeStates((prev) => {
+            const next = new Map(prev);
+            for (const [convId, s] of restoredSessions.entries()) {
+              next.set(convId, {
+                state: 'established',
+                establishedAt: s.establishedAt,
+                peerFingerprint: s.peerFingerprint,
+              });
+              const curMax = maxOwnSeqRef.current.get(convId) ?? 0;
+              if (s.sequenceNumber > curMax) {
+                maxOwnSeqRef.current.set(convId, s.sequenceNumber);
+              }
+            }
+            return next;
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('[CryptoContext] Failed to restore session keys from IndexedDB:', err);
+      });
   }, [isAuthenticated, user, refreshCAInfo]);
 
   const initializeIdentityForRegistration = useCallback(
@@ -331,6 +367,10 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
           peerFingerprint: keys.peerFingerprint,
         });
 
+        if (user) {
+          await saveSessionKeysToIndexedDB(user.id, keys);
+        }
+
         socketService.respondHandshake(payload);
       } catch (err) {
         setHandshakeState(convId, {
@@ -339,7 +379,7 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
         });
       }
     },
-    [caPublicKey, crl, cryptoIdentity, initializeCryptoModule, setHandshakeState]
+    [caPublicKey, crl, cryptoIdentity, initializeCryptoModule, setHandshakeState, user]
   );
 
   const handleIncomingHandshakeRespond = useCallback(
@@ -393,6 +433,10 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
           establishedAt: keys.establishedAt,
           peerFingerprint: keys.peerFingerprint,
         });
+
+        if (user) {
+          await saveSessionKeysToIndexedDB(user.id, keys);
+        }
       } catch (err) {
         setHandshakeState(convId, {
           state: 'failed',
@@ -400,7 +444,7 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
         });
       }
     },
-    [caPublicKey, crl, cryptoIdentity, initializeCryptoModule, setHandshakeState]
+    [caPublicKey, crl, cryptoIdentity, initializeCryptoModule, setHandshakeState, user]
   );
 
   const seedConversationSequence = useCallback(
@@ -408,9 +452,12 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
       const prevMax = maxOwnSeqRef.current.get(conversationId) ?? 0;
       if (maxOwnSeq > prevMax) {
         maxOwnSeqRef.current.set(conversationId, maxOwnSeq);
+        if (user) {
+          updateSessionSequenceInIndexedDB(user.id, conversationId, maxOwnSeq).catch(() => {});
+        }
       }
     },
-    []
+    [user]
   );
 
   const encryptForConversation = useCallback(
@@ -438,9 +485,13 @@ export const CryptoProvider: React.FC<{ children: React.ReactNode }> = ({
         return next;
       });
 
+      if (user) {
+        updateSessionSequenceInIndexedDB(user.id, conversationId, nextSeq).catch(() => {});
+      }
+
       return { ...encrypted, sequenceNumber: nextSeq };
     },
-    []
+    [user]
   );
 
   const decryptForConversation = useCallback(

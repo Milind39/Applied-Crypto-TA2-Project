@@ -1,3 +1,4 @@
+process.env.NODE_ENV = 'test';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -358,6 +359,39 @@ describe('Post-Quantum Secure Messenger Security & Integration Suite', () => {
         }),
       /Authentication required/
     );
+
+    // Verify unverified user is blocked from logging in
+    const oldEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const eveId = createdUserIds[createdUserIds.length - 1];
+      await query('UPDATE users SET is_email_verified = FALSE WHERE id = $1', [eveId]);
+      const unverifiedLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          email: eveCreds.email,
+          password: eveCreds.password,
+        }),
+      });
+      assert.equal(unverifiedLoginRes.status, 403);
+      const unverifiedJson = (await unverifiedLoginRes.json()) as any;
+      assert.equal(unverifiedJson.needsVerification, true);
+
+      // Verify email and verify login now succeeds
+      await query('UPDATE users SET is_email_verified = TRUE WHERE id = $1', [eveId]);
+      const verifiedLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          email: eveCreds.email,
+          password: eveCreds.password,
+        }),
+      });
+      assert.equal(verifiedLoginRes.status, 200);
+    } finally {
+      process.env.NODE_ENV = oldEnv;
+    }
   });
 
   it('3. Alice & Bob generate distinct ML-DSA-65 identities and receive valid CA-signed certs', async () => {

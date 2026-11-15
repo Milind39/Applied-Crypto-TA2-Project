@@ -14,7 +14,7 @@ interface AuthContextValue {
     email: string,
     password: string,
     confirmPassword: string
-  ) => Promise<User>;
+  ) => Promise<{ user: User; token?: string; needsVerification?: boolean; message?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -76,12 +76,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: string,
       password: string,
       confirmPassword: string
-    ): Promise<User> => {
+    ): Promise<{ user: User; token?: string; needsVerification?: boolean; message?: string }> => {
       const res = await api.register(username, email, password, confirmPassword);
-      setUser(res.user);
-      setToken(res.token);
-      sessionStorage.setItem(SESSION_TOKEN_KEY, res.token);
-      return res.user;
+      if (res.token && res.user?.isEmailVerified) {
+        setUser(res.user);
+        setToken(res.token);
+        sessionStorage.setItem(SESSION_TOKEN_KEY, res.token);
+      }
+      return res;
     },
     []
   );

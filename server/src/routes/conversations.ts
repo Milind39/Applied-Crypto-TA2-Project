@@ -26,11 +26,10 @@ router.get(
             WHERE m.conversation_id = c.id
               AND m.sender_id != $1
               AND m.status = 'sent') AS unread_count,
-           (SELECT row_to_json(sub)
-            FROM (SELECT m2.id, m2.ciphertext, m2.created_at, m2.sender_id, m2.status
-                  FROM messages m2
-                  WHERE m2.conversation_id = c.id
-                  ORDER BY m2.created_at DESC LIMIT 1) sub
+           (SELECT JSON_OBJECT('id', m2.id, 'ciphertext', m2.ciphertext, 'created_at', m2.created_at, 'sender_id', m2.sender_id, 'status', m2.status)
+            FROM messages m2
+            WHERE m2.conversation_id = c.id
+            ORDER BY m2.created_at DESC LIMIT 1
            ) AS last_message
          FROM conversations c
          JOIN users u ON u.id = CASE WHEN c.participant_a = $1 THEN c.participant_b ELSE c.participant_a END
@@ -39,7 +38,15 @@ router.get(
         [userId]
       );
 
-      res.json({ conversations: result.rows });
+      const conversations = result.rows.map((row: any) => ({
+        ...row,
+        last_message:
+          typeof row.last_message === 'string'
+            ? JSON.parse(row.last_message)
+            : row.last_message,
+      }));
+
+      res.json({ conversations });
     } catch (err) {
       console.error('[Conversations] List error:', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -167,7 +174,7 @@ router.get(
 
       const result = await query(messagesQuery, params);
       const seqRes = await query<{ max_seq: string }>(
-        `SELECT COALESCE(MAX(sequence_number), 0)::bigint AS max_seq
+        `SELECT COALESCE(MAX(sequence_number), 0) AS max_seq
          FROM messages
          WHERE conversation_id = $1 AND sender_id = $2`,
         [conversationId, userId]

@@ -37,7 +37,7 @@ export async function deriveKeys(
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
-    false,
+    true,
     ['encrypt', 'decrypt']
   );
 
@@ -50,7 +50,7 @@ export async function deriveKeys(
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
-    false,
+    true,
     ['encrypt', 'decrypt']
   );
 

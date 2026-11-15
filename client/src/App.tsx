@@ -6,6 +6,7 @@ import { SocketProvider } from './contexts/SocketContext';
 import { LandingPage } from './pages/LandingPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { LoginPage } from './pages/LoginPage';
+import { VerifyEmailPage } from './pages/VerifyEmailPage';
 import { PasswordResetPage } from './pages/PasswordResetPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { SecurityPage } from './pages/SecurityPage';
@@ -13,7 +14,7 @@ import { SecurityPage } from './pages/SecurityPage';
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
 
   if (isLoading) {
     return (
@@ -23,8 +24,12 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || !user) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (user.isEmailVerified === false) {
+    return <Navigate to="/login?unverified=true" replace />;
   }
 
   return <>{children}</>;
@@ -40,6 +45,7 @@ export const App: React.FC = () => {
               <Route path="/" element={<LandingPage />} />
               <Route path="/register" element={<RegisterPage />} />
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/verify-email" element={<VerifyEmailPage />} />
               <Route path="/reset-password" element={<PasswordResetPage />} />
               <Route
                 path="/dashboard"

@@ -35,14 +35,20 @@ router.post(
       );
 
       // Revoke any other existing active certificates for this user
-      const revoked = await query(
-        `UPDATE certificates SET is_revoked = TRUE, revoked_at = NOW()
-         WHERE user_id = $1 AND is_revoked = FALSE AND fingerprint != $2
-         RETURNING fingerprint`,
+      const revoked = await query<{ fingerprint: string }>(
+        `SELECT fingerprint FROM certificates
+         WHERE user_id = $1 AND is_revoked = FALSE AND fingerprint != $2`,
         [user.id, fingerprint]
       );
-      for (const row of revoked.rows) {
-        revokeCertificate(row.fingerprint);
+      if (revoked.rows.length > 0) {
+        await query(
+          `UPDATE certificates SET is_revoked = TRUE, revoked_at = NOW()
+           WHERE user_id = $1 AND is_revoked = FALSE AND fingerprint != $2`,
+          [user.id, fingerprint]
+        );
+        for (const row of revoked.rows) {
+          revokeCertificate(row.fingerprint);
+        }
       }
 
       const certData = JSON.parse(certificate);
@@ -50,14 +56,13 @@ router.post(
       await query(
         `INSERT INTO certificates (user_id, public_signing_key, certificate, ca_signature, issued_at, expires_at, fingerprint)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (fingerprint) DO UPDATE SET
-           certificate = EXCLUDED.certificate,
-           ca_signature = EXCLUDED.ca_signature,
-           issued_at = EXCLUDED.issued_at,
-           expires_at = EXCLUDED.expires_at,
+         ON DUPLICATE KEY UPDATE
+           certificate = VALUES(certificate),
+           ca_signature = VALUES(ca_signature),
+           issued_at = VALUES(issued_at),
+           expires_at = VALUES(expires_at),
            is_revoked = FALSE,
-           revoked_at = NULL
-         WHERE certificates.user_id = EXCLUDED.user_id`,
+           revoked_at = NULL`,
         [
           user.id,
           publicSigningKey,

@@ -159,16 +159,22 @@ export const DashboardPage: React.FC = () => {
     if (!selectedConvId || !activeSession) return;
     const currentMsgs = messagesByConv.get(selectedConvId);
     if (!currentMsgs || currentMsgs.length === 0) return;
-    if (currentMsgs.every((m) => m.plaintext !== undefined)) return;
+    if (currentMsgs.every((m) => m.plaintext !== undefined || m.decryptionError !== undefined)) return;
 
     decryptMessageList(selectedConvId, currentMsgs, true).then((updated) => {
       setMessagesByConv((prev) => {
         const next = new Map(prev);
-        next.set(selectedConvId, updated);
+        const current = next.get(selectedConvId) || [];
+        const updatedMap = new Map(updated.map((m) => [m.id, m]));
+        const merged = current.map((m) => {
+          const fresh = updatedMap.get(m.id);
+          return fresh ? { ...m, ...fresh, plaintext: m.plaintext ?? fresh.plaintext } : m;
+        });
+        next.set(selectedConvId, merged);
         return next;
       });
     });
-  }, [selectedConvId, activeSession, decryptMessageList]);
+  }, [selectedConvId, activeSession?.establishedAt, decryptMessageList]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -387,7 +393,13 @@ export const DashboardPage: React.FC = () => {
     const tempId = crypto.randomUUID();
     const metadata = { senderId: user.id, timestamp: Date.now() };
 
-    const encrypted = await encryptForConversation(convId, plaintext, metadata);
+    let encrypted: { ciphertext: string; nonce: string; iv: string; tag: string; sequenceNumber: number };
+    try {
+      encrypted = await encryptForConversation(convId, plaintext, metadata);
+    } catch (err) {
+      setError((err as Error).message);
+      return;
+    }
 
     const optimistic: Message = {
       id: tempId,
@@ -409,6 +421,28 @@ export const DashboardPage: React.FC = () => {
       next.set(convId, [...(next.get(convId) || []), optimistic]);
       return next;
     });
+
+    setConversations((prev) =>
+      prev
+        .map((c) => {
+          if (c.id !== convId) return c;
+          return {
+            ...c,
+            updatedAt: optimistic.createdAt,
+            lastMessage: {
+              id: optimistic.id,
+              ciphertext: optimistic.ciphertext,
+              createdAt: optimistic.createdAt,
+              senderId: optimistic.senderId,
+              status: optimistic.status,
+            },
+          };
+        })
+        .sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        )
+    );
 
     socketService.sendEncryptedMessage(
       {
@@ -437,22 +471,33 @@ export const DashboardPage: React.FC = () => {
           return;
         }
         if (ack?.ok && ack.message) {
+          const stored = api.normalizeMessage(ack.message);
           setMessagesByConv((prev) => {
             const next = new Map(prev);
             const list = next.get(convId) || [];
-            next.set(
-              convId,
-              list.map((m) =>
-                m.id === tempId
-                  ? {
-                      ...m,
-                      id: ack.message.id || m.id,
-                      status: ack.message.status || 'sent',
-                      createdAt: ack.message.created_at || m.createdAt,
-                    }
-                  : m
-              )
+            const idx = list.findIndex(
+              (m) => m.id === tempId || m.id === stored.id
             );
+            if (idx >= 0) {
+              const copy = [...list];
+              copy[idx] = {
+                ...copy[idx],
+                id: stored.id || copy[idx].id,
+                status: stored.status || 'sent',
+                createdAt: stored.createdAt || copy[idx].createdAt,
+                plaintext: copy[idx].plaintext ?? plaintext,
+              };
+              next.set(convId, copy);
+            } else {
+              next.set(convId, [
+                ...list,
+                {
+                  ...stored,
+                  plaintext,
+                  status: stored.status || 'sent',
+                },
+              ]);
+            }
             return next;
           });
         }
@@ -547,10 +592,23 @@ export const DashboardPage: React.FC = () => {
                   </div>
                 </div>
 
-                <EncryptionBadge
-                  status={activeHandshake}
-                  onInitiateHandshake={handleInitiateHandshake}
-                />
+                <div className="flex items-center gap-2">
+                  <EncryptionBadge
+                    status={activeHandshake}
+                    onInitiateHandshake={handleInitiateHandshake}
+                  />
+                  {activeSession && (
+                    <button
+                      type="button"
+                      onClick={handleInitiateHandshake}
+                      disabled={!cryptoIdentity || !connected}
+                      className="text-[11px] text-gray-400 hover:text-cyan-400 transition underline cursor-pointer"
+                      title="Request new post-quantum session keys"
+                    >
+                      Re-key
+                    </button>
+                  )}
+                </div>
               </div>
 
               {error && (

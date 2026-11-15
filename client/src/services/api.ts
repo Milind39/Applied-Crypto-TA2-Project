@@ -146,10 +146,28 @@ export async function register(
   email: string,
   password: string,
   confirmPassword: string
-): Promise<{ user: User; token: string }> {
+): Promise<{ user: User; token?: string; needsVerification?: boolean; message?: string }> {
   return request('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({ username, email, password, confirmPassword }),
+  });
+}
+
+export async function verifyEmail(
+  token: string
+): Promise<{ message: string; email?: string }> {
+  return request('/api/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function resendVerification(
+  email: string
+): Promise<{ message: string }> {
+  return request('/api/auth/resend-verification', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
   });
 }
 

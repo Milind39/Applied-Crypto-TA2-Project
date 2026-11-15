@@ -2,12 +2,12 @@
 
 ![Post-Quantum](https://img.shields.io/badge/Post--Quantum-ML--KEM--768%20%7C%20ML--DSA--65-00ff41?style=flat-square)
 ![Symmetric](https://img.shields.io/badge/AEAD-AES--256--GCM%20%7C%20HKDF--SHA--256-06b6d4?style=flat-square)
-![Stack](https://img.shields.io/badge/Stack-React%2019%20%7C%20Node.js%20%7C%20PostgreSQL-111827?style=flat-square)
+![Stack](https://img.shields.io/badge/Stack-React%2019%20%7C%20Node.js%20%7C%20MariaDB-111827?style=flat-square)
 ![Tests](https://img.shields.io/badge/Security%20Suite-9%2F9%20Passing-10b981?style=flat-square)
 
 **PQ Messenger** is a full-stack, zero-knowledge, **post-quantum end-to-end encrypted (E2EE)** real-time messaging web application. All long-term identity key generation, ephemeral post-quantum key encapsulation, directional session key derivation, and symmetric authenticated encryption happen **exclusively inside the user's browser** using WebAssembly (`@oqs/liboqs-js`) and the Web Crypto API.
 
-The Node.js/Express/Socket.IO backend and PostgreSQL database act strictly as an authenticated **ciphertext relay**, **encrypted private-key backup vault**, and **post-quantum Certificate Authority (CA)** — never seeing plaintext messages, unencrypted private keys, or session secrets.
+The Node.js/Express/Socket.IO backend and MariaDB database act strictly as an authenticated **ciphertext relay**, **encrypted private-key backup vault**, and **post-quantum Certificate Authority (CA)** — never seeing plaintext messages, unencrypted private keys, or session secrets.
 
 ---
 
@@ -48,7 +48,7 @@ flowchart LR
     CA["ML-DSA-65 Certificate Authority + CRL"]
   end
 
-  subgraph DB["PostgreSQL (:5433 / pqmessenger)"]
+  subgraph DB["MariaDB (:3306 / pqmessenger)"]
     PG[("users, certificates, conversations,\nmessages (ciphertext only), sessions,\nkey_backups, password_resets")]
   end
 
@@ -159,27 +159,21 @@ Applied-Crypto-TA2-Project/
 ### Prerequisites
 
 - **Node.js** v20+ (tested on Node v24) & `npm`
-- **PostgreSQL** 15+ (tested on PostgreSQL 17)
+- **MariaDB** 10.7+ / 11+ (tested on MariaDB 11.8)
 
-### 1. Database Setup (PostgreSQL)
+### 1. Database Setup (MariaDB)
 
-By default, [`server/src/config.ts`](server/src/config.ts) connects to a PostgreSQL database named `pqmessenger`:
+By default, [`server/src/config.ts`](server/src/config.ts) and [server/.env](server/.env) connect to a MariaDB database named `pqmessenger`:
 
-```ts
-db: {
-  host: '/home/toji/.local/pgdata',
-  port: 5433,
-  user: 'toji',
-  database: 'pqmessenger',
-}
+```env
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=toji
+DB_PASSWORD=toji123
+DB_NAME=pqmessenger
 ```
 
-> If you are running on a different machine or using the standard system PostgreSQL service (`localhost:5432`, user `postgres`), update `db` in `server/src/config.ts` accordingly and create the `pqmessenger` database:
-> ```bash
-> createdb pqmessenger
-> ```
-
-On startup, `initDatabase()` in [`server/src/db.ts`](server/src/db.ts) automatically creates all 7 tables (`users`, `certificates`, `conversations`, `messages`, `sessions`, `key_backups`, `password_resets`) and indexes.
+On startup, `initDatabase()` in [`server/src/db.ts`](server/src/db.ts) automatically starts MariaDB in WSL if needed, and creates all 7 tables (`users`, `certificates`, `conversations`, `messages`, `sessions`, `key_backups`, `password_resets`) and indexes.
 
 ### 2. Install & Run Backend (`server/`)
 

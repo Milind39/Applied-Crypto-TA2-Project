@@ -73,8 +73,11 @@ export function initSocketIO(httpServer: HttpServer): Server {
       };
 
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-      const sessionRes = await query<{ is_active: boolean; expires_at: Date }>(
-        'SELECT is_active, expires_at FROM sessions WHERE token_hash = $1 LIMIT 1',
+      const sessionRes = await query<{ is_active: boolean; expires_at: Date; is_email_verified: any }>(
+        `SELECT s.is_active, s.expires_at, u.is_email_verified
+         FROM sessions s
+         JOIN users u ON s.user_id = u.id
+         WHERE s.token_hash = $1 LIMIT 1`,
         [tokenHash]
       );
 
@@ -84,6 +87,15 @@ export function initSocketIO(httpServer: HttpServer): Server {
           new Date(sessionRes.rows[0].expires_at) < new Date())
       ) {
         return next(new Error('Session expired or revoked'));
+      }
+
+      if (
+        sessionRes.rows.length > 0 &&
+        config.requireEmailVerification &&
+        process.env.NODE_ENV !== 'test' &&
+        !Boolean(sessionRes.rows[0].is_email_verified)
+      ) {
+        return next(new Error('Account email not verified'));
       }
 
       socket.userId = decoded.id;
@@ -176,18 +188,11 @@ export function initSocketIO(httpServer: HttpServer): Server {
             clientMessageId: data.messageId,
           });
 
-          // Sync to sender's other open tabs/devices
-          const senderSockets = userSockets.get(userId);
-          if (senderSockets) {
-            for (const sId of senderSockets) {
-              if (sId !== socket.id) {
-                io.to(sId).emit('message:receive', {
-                  ...storedMessage,
-                  clientMessageId: data.messageId,
-                });
-              }
-            }
-          }
+          // Sync to all sender sockets (including current socket to guarantee delivery confirmation & sidebar update)
+          emitToUser(io, userId, 'message:receive', {
+            ...storedMessage,
+            clientMessageId: data.messageId,
+          });
 
           if (callback) {
             callback({ ok: true, message: storedMessage });
@@ -206,27 +211,39 @@ export function initSocketIO(httpServer: HttpServer): Server {
         try {
           if (!data?.messageId) return;
 
-          const result = await query(
-            `UPDATE messages m
-             SET status = CASE WHEN m.status = 'read' THEN 'read' ELSE 'delivered' END,
-                 delivered_at = COALESCE(m.delivered_at, NOW())
-             FROM conversations c
+          const checkMsg = await query<{ id: string; conversation_id: string; sender_id: string }>(
+            `SELECT m.id, m.conversation_id, m.sender_id
+             FROM messages m
+             JOIN conversations c ON c.id = m.conversation_id
              WHERE m.id = $1
-               AND c.id = m.conversation_id
                AND (c.participant_a = $2 OR c.participant_b = $2)
-               AND m.sender_id != $2
-             RETURNING m.id, m.conversation_id, m.sender_id, m.status, m.delivered_at`,
+               AND m.sender_id != $2`,
             [data.messageId, userId]
           );
 
-          if (result.rows.length > 0) {
-            const msg = result.rows[0];
-            emitToUser(io, msg.sender_id, 'message:delivered', {
-              messageId: msg.id,
-              conversationId: msg.conversation_id,
-              deliveredAt: msg.delivered_at,
-              status: msg.status,
-            });
+          if (checkMsg.rows.length > 0) {
+            await query(
+              `UPDATE messages
+               SET status = CASE WHEN status = 'read' THEN 'read' ELSE 'delivered' END,
+                   delivered_at = COALESCE(delivered_at, NOW())
+               WHERE id = $1`,
+              [data.messageId]
+            );
+
+            const result = await query(
+              `SELECT id, conversation_id, sender_id, status, delivered_at FROM messages WHERE id = $1`,
+              [data.messageId]
+            );
+
+            if (result.rows.length > 0) {
+              const msg = result.rows[0];
+              emitToUser(io, msg.sender_id, 'message:delivered', {
+                messageId: msg.id,
+                conversationId: msg.conversation_id,
+                deliveredAt: msg.delivered_at,
+                status: msg.status,
+              });
+            }
           }
         } catch (err) {
           console.error('[Socket] message:delivered error:', (err as Error).message);
@@ -241,28 +258,40 @@ export function initSocketIO(httpServer: HttpServer): Server {
         try {
           if (!data?.messageId) return;
 
-          const result = await query(
-            `UPDATE messages m
-             SET status = 'read',
-                 delivered_at = COALESCE(m.delivered_at, NOW()),
-                 read_at = COALESCE(m.read_at, NOW())
-             FROM conversations c
+          const checkMsg = await query<{ id: string; conversation_id: string; sender_id: string }>(
+            `SELECT m.id, m.conversation_id, m.sender_id
+             FROM messages m
+             JOIN conversations c ON c.id = m.conversation_id
              WHERE m.id = $1
-               AND c.id = m.conversation_id
                AND (c.participant_a = $2 OR c.participant_b = $2)
-               AND m.sender_id != $2
-             RETURNING m.id, m.conversation_id, m.sender_id, m.status, m.read_at`,
+               AND m.sender_id != $2`,
             [data.messageId, userId]
           );
 
-          if (result.rows.length > 0) {
-            const msg = result.rows[0];
-            emitToUser(io, msg.sender_id, 'message:read', {
-              messageId: msg.id,
-              conversationId: msg.conversation_id,
-              readAt: msg.read_at,
-              status: msg.status,
-            });
+          if (checkMsg.rows.length > 0) {
+            await query(
+              `UPDATE messages
+               SET status = 'read',
+                   delivered_at = COALESCE(delivered_at, NOW()),
+                   read_at = COALESCE(read_at, NOW())
+               WHERE id = $1`,
+              [data.messageId]
+            );
+
+            const result = await query(
+              `SELECT id, conversation_id, sender_id, status, read_at FROM messages WHERE id = $1`,
+              [data.messageId]
+            );
+
+            if (result.rows.length > 0) {
+              const msg = result.rows[0];
+              emitToUser(io, msg.sender_id, 'message:read', {
+                messageId: msg.id,
+                conversationId: msg.conversation_id,
+                readAt: msg.read_at,
+                status: msg.status,
+              });
+            }
           }
         } catch (err) {
           console.error('[Socket] message:read error:', (err as Error).message);
@@ -360,11 +389,12 @@ export function initSocketIO(httpServer: HttpServer): Server {
         if (currentSockets.size === 0) {
           userSockets.delete(userId);
           try {
-            const res = await query(
-              'UPDATE users SET is_online = FALSE, last_seen = NOW(), updated_at = NOW() WHERE id = $1 RETURNING last_seen',
+            const now = new Date();
+            await query(
+              'UPDATE users SET is_online = FALSE, last_seen = NOW(), updated_at = NOW() WHERE id = $1',
               [userId]
             );
-            const lastSeen = res.rows[0]?.last_seen || new Date().toISOString();
+            const lastSeen = now.toISOString();
             socket.broadcast.emit('user:offline', {
               userId,
               username,

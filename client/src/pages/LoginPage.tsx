@@ -1,22 +1,42 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useCrypto } from '../contexts/CryptoContext';
+import * as api from '../services/api';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { login } = useAuth();
-  const { restoreIdentityOnLogin } = useCrypto();
+  const { restoreIdentityOnLogin, regenerateIdentity } = useCrypto();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [resendStatus, setResendStatus] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const isVerifiedBanner = searchParams.get('verified') === 'true';
+
+  const handleResend = async () => {
+    if (!email) {
+      setError('Please enter your email above to resend verification link');
+      return;
+    }
+    setResendStatus('Resending verification email...');
+    try {
+      const res = await api.resendVerification(email.trim());
+      setResendStatus(res.message || 'Verification email resent!');
+    } catch (err: any) {
+      setResendStatus(err.message || 'Failed to resend verification email');
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setResendStatus(null);
 
     if (!email.trim() || !password) {
       setError('Email and password are required');
@@ -28,10 +48,14 @@ export const LoginPage: React.FC = () => {
     try {
       const user = await login(email.trim(), password);
       setStatus('Loading ML-DSA-65 identity from IndexedDB / encrypted backup...');
-      await restoreIdentityOnLogin(user.id, password);
+      const identity = await restoreIdentityOnLogin(user.id, password);
+      if (!identity) {
+        setStatus('Initializing post-quantum cryptographic identity and CA certificate...');
+        await regenerateIdentity(password);
+      }
       navigate('/dashboard');
-    } catch (err) {
-      setError((err as Error).message || 'Invalid credentials');
+    } catch (err: any) {
+      setError(err.message || 'Invalid credentials');
     } finally {
       setSubmitting(false);
       setStatus(null);
@@ -53,9 +77,31 @@ export const LoginPage: React.FC = () => {
           </p>
         </div>
 
+        {isVerifiedBanner && (
+          <div className="p-3 rounded-lg bg-emerald-950/60 border border-emerald-500/50 text-emerald-300 text-xs flex items-center gap-2">
+            <span className="text-emerald-400 font-bold">✓</span>
+            <span>Email verified successfully! You may now sign in.</span>
+          </div>
+        )}
+
         {error && (
-          <div className="p-3 rounded-lg bg-red-950/60 border border-red-500/50 text-red-300 text-xs">
-            {error}
+          <div className="p-3 rounded-lg bg-red-950/60 border border-red-500/50 text-red-300 text-xs space-y-2">
+            <div>{error}</div>
+            {error.toLowerCase().includes('not verified') && (
+              <button
+                type="button"
+                onClick={handleResend}
+                className="text-xs text-cyan-400 hover:underline font-semibold block cursor-pointer"
+              >
+                Resend verification email
+              </button>
+            )}
+          </div>
+        )}
+
+        {resendStatus && (
+          <div className="p-3 rounded-lg bg-cyan-950/50 border border-cyan-500/40 text-cyan-300 text-xs">
+            {resendStatus}
           </div>
         )}
 
@@ -107,14 +153,14 @@ export const LoginPage: React.FC = () => {
             disabled={submitting}
             className="w-full py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold text-sm transition cursor-pointer"
           >
-            {submitting ? 'Signing In...' : 'Sign In'}
+            {submitting ? 'Unlocking Keystore...' : 'Sign In & Unlock Keystore'}
           </button>
         </form>
 
         <p className="text-center text-xs text-gray-400">
-          Need an identity?{' '}
+          Don't have an account?{' '}
           <Link to="/register" className="text-cyan-400 hover:underline font-medium">
-            Create account
+            Create PQ Identity
           </Link>
         </p>
       </div>

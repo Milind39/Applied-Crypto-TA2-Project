@@ -21,7 +21,7 @@ router.get(
       const result = await query(
         `SELECT id, username, is_online, last_seen
          FROM users
-         WHERE username ILIKE $1 AND id != $2
+         WHERE username LIKE $1 AND id != $2
          ORDER BY username
          LIMIT 20`,
         [`%${searchQuery}%`, req.user!.id]

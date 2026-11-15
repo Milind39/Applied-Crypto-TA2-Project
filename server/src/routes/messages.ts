@@ -106,12 +106,17 @@ router.put(
       }
 
       const timestampCol = status === 'delivered' ? 'delivered_at' : 'read_at';
-      const result = await query(
+      await query(
         `UPDATE messages
          SET status = $1, ${timestampCol} = COALESCE(${timestampCol}, NOW())
-         WHERE id = $2
-         RETURNING id, conversation_id, sender_id, status, delivered_at, read_at`,
+         WHERE id = $2`,
         [status, messageId]
+      );
+
+      const result = await query(
+        `SELECT id, conversation_id, sender_id, status, delivered_at, read_at
+         FROM messages WHERE id = $1`,
+        [messageId]
       );
 
       res.json({ message: result.rows[0] });

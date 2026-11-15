@@ -1,16 +1,35 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import * as api from '../services/api';
 
 export const PasswordResetPage: React.FC = () => {
-  const [step, setStep] = useState<'request' | 'confirm' | 'done'>('request');
-  const [email, setEmail] = useState('');
-  const [token, setToken] = useState('');
+  const [searchParams] = useSearchParams();
+  const queryToken = searchParams.get('token') || '';
+  const queryEmail = searchParams.get('email') || '';
+
+  const [step, setStep] = useState<'request' | 'confirm' | 'done'>(() =>
+    queryToken ? 'confirm' : 'request'
+  );
+  const [email, setEmail] = useState(() => queryEmail);
+  const [token, setToken] = useState(() => queryToken);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [info, setInfo] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(() =>
+    queryToken ? 'Reset token loaded from email link. Please set your new password below.' : null
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (queryToken) {
+      setToken(queryToken);
+      setStep('confirm');
+      setInfo('Reset token loaded from email link. Please set your new password below.');
+    }
+    if (queryEmail) {
+      setEmail(queryEmail);
+    }
+  }, [queryToken, queryEmail]);
 
   const handleRequest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,10 +38,10 @@ export const PasswordResetPage: React.FC = () => {
     setLoading(true);
     try {
       const res = await api.requestPasswordReset(email.trim());
-      setInfo(res.message);
-      if (res.resetToken) {
-        setToken(res.resetToken);
-      }
+      setInfo(
+        res.message ||
+          'If an account with that email exists, a password reset token has been sent to your email. Check your inbox to enter the token, or click the direct link in the email.'
+      );
       setStep('confirm');
     } catch (err) {
       setError((err as Error).message || 'Failed to request password reset');
@@ -34,6 +53,11 @@ export const PasswordResetPage: React.FC = () => {
   const handleConfirm = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    if (!token.trim()) {
+      setError('Please provide the reset token sent to your email');
+      return;
+    }
 
     if (newPassword.length < 8) {
       setError('Password must be at least 8 characters');
@@ -75,7 +99,7 @@ export const PasswordResetPage: React.FC = () => {
           </Link>
           <h1 className="text-2xl font-bold text-white">Account Recovery</h1>
           <p className="text-xs text-gray-400">
-            Reset your account password. Note: server-side encrypted key backups remain bound to your previous wrapping password unless re-issued.
+            Reset your account password. A secure token will be sent to your email to verify ownership.
           </p>
         </div>
 
@@ -110,13 +134,18 @@ export const PasswordResetPage: React.FC = () => {
               disabled={loading}
               className="w-full py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold text-sm transition cursor-pointer"
             >
-              {loading ? 'Sending...' : 'Request Reset Token'}
+              {loading ? 'Sending email...' : 'Send Reset Link & Token'}
             </button>
           </form>
         )}
 
         {step === 'confirm' && (
           <form onSubmit={handleConfirm} className="space-y-4">
+            {email && (
+              <div className="p-2.5 rounded-lg bg-gray-900 border border-gray-800 text-xs text-gray-400">
+                Account: <span className="text-cyan-400 font-mono">{email}</span>
+              </div>
+            )}
             <div>
               <label className="block text-xs font-medium text-gray-300 mb-1.5">
                 Reset Token
@@ -126,9 +155,12 @@ export const PasswordResetPage: React.FC = () => {
                 required
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                placeholder="Paste reset token"
+                placeholder="Paste the reset token from your email"
                 className="w-full bg-[#0a0a0f] border border-gray-800 rounded-xl px-3.5 py-2.5 text-sm font-mono text-gray-100 placeholder-gray-600 focus:outline-none focus:border-cyan-500"
               />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Enter the token from the email sent to you, or click the link directly from the email.
+              </p>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-300 mb-1.5">
@@ -163,16 +195,35 @@ export const PasswordResetPage: React.FC = () => {
             >
               {loading ? 'Updating Password...' : 'Reset Password'}
             </button>
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setStep('request');
+                  setError(null);
+                  setInfo(null);
+                }}
+                className="text-xs text-gray-400 hover:text-cyan-400 transition"
+              >
+                Didn't get an email? Request another token
+              </button>
+            </div>
           </form>
         )}
 
         {step === 'done' && (
           <div className="text-center space-y-4">
+            <div className="p-4 rounded-xl bg-emerald-950/40 border border-[#00ff41]/40 text-sm space-y-2">
+              <div className="text-[#00ff41] font-semibold text-base">✓ Password Changed</div>
+              <p className="text-xs text-gray-300">
+                Your password has been successfully updated. All active sessions have been terminated. You can now sign in with your new password.
+              </p>
+            </div>
             <Link
               to="/login"
               className="inline-block w-full py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-sm transition"
             >
-              Return to Login
+              Sign In Now
             </Link>
           </div>
         )}

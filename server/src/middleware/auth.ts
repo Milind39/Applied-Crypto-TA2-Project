@@ -41,8 +41,11 @@ export async function authMiddleware(
     };
 
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    const sessionRes = await query<{ is_active: boolean; expires_at: Date }>(
-      'SELECT is_active, expires_at FROM sessions WHERE token_hash = $1 LIMIT 1',
+    const sessionRes = await query<{ is_active: boolean; expires_at: Date; is_email_verified: any }>(
+      `SELECT s.is_active, s.expires_at, u.is_email_verified
+       FROM sessions s
+       JOIN users u ON s.user_id = u.id
+       WHERE s.token_hash = $1 LIMIT 1`,
       [tokenHash]
     );
 
@@ -52,6 +55,16 @@ export async function authMiddleware(
         new Date(sessionRes.rows[0].expires_at) < new Date())
     ) {
       res.status(401).json({ error: 'Session expired or revoked' });
+      return;
+    }
+
+    if (
+      sessionRes.rows.length > 0 &&
+      config.requireEmailVerification &&
+      process.env.NODE_ENV !== 'test' &&
+      !Boolean(sessionRes.rows[0].is_email_verified)
+    ) {
+      res.status(403).json({ error: 'Email verification required', needsVerification: true });
       return;
     }
 

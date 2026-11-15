@@ -95,7 +95,7 @@ export async function storeEncryptedMessage(
   // Replay protection 2: enforce strictly monotonic sequence_number per (conversation, sender)
   if (sequenceNumber !== undefined && sequenceNumber !== null) {
     const seqRes = await query<{ max_seq: string }>(
-      `SELECT COALESCE(MAX(sequence_number), -1)::text AS max_seq
+      `SELECT COALESCE(MAX(sequence_number), -1) AS max_seq
        FROM messages
        WHERE conversation_id = $1 AND sender_id = $2 AND sequence_number IS NOT NULL`,
       [conversationId, senderId]
@@ -157,7 +157,7 @@ export async function storeEncryptedMessage(
       participantB: conv.rows[0].participant_b,
     };
   } catch (err: any) {
-    if (err?.code === '23505') {
+    if (err?.code === '23505' || err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062) {
       return {
         ok: false,
         status: 409,

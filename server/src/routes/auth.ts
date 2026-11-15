@@ -8,6 +8,7 @@ import { config } from '../config';
 import { query } from '../db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { authRateLimit } from '../middleware/security';
+import { sendVerificationEmail, sendPasswordResetEmail } from '../services/emailService';
 
 const router = Router();
 
@@ -68,6 +69,7 @@ router.post(
     }
 
     const { username, email, password } = req.body;
+    const isEmailVerified = process.env.NODE_ENV === 'test' || !config.requireEmailVerification;
 
     try {
       // Check if user already exists
@@ -86,12 +88,36 @@ router.post(
       const id = uuidv4();
 
       await query(
-        `INSERT INTO users (id, username, email, password_hash)
-         VALUES ($1, $2, $3, $4)`,
-        [id, username, email, passwordHash]
+        `INSERT INTO users (id, username, email, password_hash, is_email_verified)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [id, username, email, passwordHash, isEmailVerified]
       );
 
-      // Create session
+      // Generate verification token and send verification email
+      const verificationToken = crypto.randomBytes(48).toString('hex');
+      const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await query(
+        `INSERT INTO verification_tokens (email, token, expiry)
+         VALUES ($1, $2, $3)`,
+        [email, verificationToken, verificationExpiry]
+      );
+
+      // Asynchronously send email (don't block registration if SMTP takes a moment)
+      sendVerificationEmail(email, verificationToken).catch((err) => {
+        console.warn('[Auth] Verification email dispatch notice:', err.message);
+      });
+
+      // If email verification is required and not yet verified, do NOT log the user in!
+      if (!isEmailVerified) {
+        res.status(201).json({
+          message: 'User registered successfully. A verification link has been sent to your email. Please verify your email before logging in.',
+          user: { id, username, email, isEmailVerified: false },
+          needsVerification: true,
+        });
+        return;
+      }
+
+      // If email is verified (e.g. test environment), create session & issue token
       const user = { id, username, email };
       const token = issueToken(res, user);
       const tokenHash = crypto
@@ -107,12 +133,167 @@ router.post(
       );
 
       res.status(201).json({
-        message: 'User registered successfully',
-        user: { id, username, email },
+        message: 'User registered successfully.',
+        user: { id, username, email, isEmailVerified: true },
         token,
       });
     } catch (err) {
       console.error('[Auth] Registration error:', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// POST /api/auth/verify-email
+router.post(
+  '/verify-email',
+  [body('token').isString().notEmpty().withMessage('Verification token required')],
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({ errors: errors.array() });
+      return;
+    }
+
+    const { token } = req.body;
+
+    try {
+      const tokenRes = await query<{ id: string; email: string; expiry: Date }>(
+        'SELECT id, email, expiry FROM verification_tokens WHERE token = $1 LIMIT 1',
+        [token]
+      );
+
+      if (tokenRes.rows.length === 0) {
+        res.status(400).json({ error: 'Invalid or expired verification token' });
+        return;
+      }
+
+      const record = tokenRes.rows[0];
+      const now = new Date();
+
+      if (new Date(record.expiry) < now) {
+        const newToken = crypto.randomBytes(48).toString('hex');
+        const newExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await query(
+          'UPDATE verification_tokens SET token = $1, expiry = $2 WHERE id = $3',
+          [newToken, newExpiry, record.id]
+        );
+        sendVerificationEmail(record.email, newToken).catch(() => { });
+        res.status(400).json({
+          error: 'Verification token has expired. A fresh verification link has been sent to your email.',
+          expired: true,
+        });
+        return;
+      }
+
+      await query('UPDATE users SET is_email_verified = TRUE, updated_at = NOW() WHERE email = $1', [
+        record.email,
+      ]);
+      await query('DELETE FROM verification_tokens WHERE email = $1', [record.email]);
+
+      res.json({
+        message: 'Email verified successfully! You may now log in.',
+        email: record.email,
+      });
+    } catch (err) {
+      console.error('[Auth] Verify email error:', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// GET /api/auth/verify-email?token=...
+router.get(
+  '/verify-email',
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const token = req.query.token as string;
+    if (!token) {
+      res.status(400).json({ error: 'Verification token required' });
+      return;
+    }
+
+    try {
+      const tokenRes = await query<{ id: string; email: string; expiry: Date }>(
+        'SELECT id, email, expiry FROM verification_tokens WHERE token = $1 LIMIT 1',
+        [token]
+      );
+
+      if (tokenRes.rows.length === 0) {
+        res.status(400).json({ error: 'Invalid or expired verification token' });
+        return;
+      }
+
+      const record = tokenRes.rows[0];
+      if (new Date(record.expiry) < new Date()) {
+        const newToken = crypto.randomBytes(48).toString('hex');
+        const newExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await query(
+          'UPDATE verification_tokens SET token = $1, expiry = $2 WHERE id = $3',
+          [newToken, newExpiry, record.id]
+        );
+        sendVerificationEmail(record.email, newToken).catch(() => { });
+        res.status(400).json({
+          error: 'Verification token has expired. A fresh verification link has been sent to your email.',
+          expired: true,
+        });
+        return;
+      }
+
+      await query('UPDATE users SET is_email_verified = TRUE, updated_at = NOW() WHERE email = $1', [
+        record.email,
+      ]);
+      await query('DELETE FROM verification_tokens WHERE email = $1', [record.email]);
+
+      res.redirect(`${config.frontendUrl}/login?verified=true`);
+    } catch (err) {
+      console.error('[Auth] Verify email error:', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+// POST /api/auth/resend-verification
+router.post(
+  '/resend-verification',
+  [body('email').isEmail().normalizeEmail().withMessage('Valid email required')],
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({ errors: errors.array() });
+      return;
+    }
+
+    const { email } = req.body;
+
+    try {
+      const userRes = await query<{ id: string; is_email_verified: boolean }>(
+        'SELECT id, is_email_verified FROM users WHERE email = $1',
+        [email]
+      );
+
+      if (userRes.rows.length === 0) {
+        res.json({ message: 'If the email exists, a verification link has been sent.' });
+        return;
+      }
+
+      if (userRes.rows[0].is_email_verified) {
+        res.status(400).json({ error: 'This email is already verified.' });
+        return;
+      }
+
+      await query('DELETE FROM verification_tokens WHERE email = $1', [email]);
+      const newToken = crypto.randomBytes(48).toString('hex');
+      const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await query(
+        'INSERT INTO verification_tokens (email, token, expiry) VALUES ($1, $2, $3)',
+        [email, newToken, expiry]
+      );
+
+      await sendVerificationEmail(email, newToken);
+
+      res.json({ message: 'Verification email resent successfully.' });
+    } catch (err) {
+      console.error('[Auth] Resend verification error:', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -137,7 +318,7 @@ router.post(
 
     try {
       const result = await query(
-        'SELECT id, username, email, password_hash FROM users WHERE email = $1',
+        'SELECT id, username, email, password_hash, is_email_verified FROM users WHERE email = $1',
         [email]
       );
 
@@ -151,6 +332,16 @@ router.post(
 
       if (!validPassword) {
         res.status(401).json({ error: 'Invalid credentials' });
+        return;
+      }
+
+      const isVerified = Boolean(user.is_email_verified);
+      if (config.requireEmailVerification && process.env.NODE_ENV !== 'test' && !isVerified) {
+        res.status(403).json({
+          error: 'Your account is not verified. Please check your email to verify your account before logging in.',
+          needsVerification: true,
+          email: user.email,
+        });
         return;
       }
 
@@ -175,7 +366,12 @@ router.post(
 
       res.json({
         message: 'Login successful',
-        user: { id: user.id, username: user.username, email: user.email },
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          isEmailVerified: isVerified,
+        },
         token,
       });
     } catch (err) {
@@ -227,7 +423,7 @@ router.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const result = await query(
-        'SELECT id, username, email, created_at, is_online, last_seen FROM users WHERE id = $1',
+        'SELECT id, username, email, is_email_verified, created_at, is_online, last_seen FROM users WHERE id = $1',
         [req.user!.id]
       );
 
@@ -236,7 +432,18 @@ router.get(
         return;
       }
 
-      res.json({ user: result.rows[0] });
+      const u = result.rows[0];
+      res.json({
+        user: {
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          isEmailVerified: Boolean(u.is_email_verified),
+          createdAt: u.created_at,
+          isOnline: u.is_online,
+          lastSeen: u.last_seen,
+        },
+      });
     } catch (err) {
       console.error('[Auth] Me error:', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -337,14 +544,20 @@ router.post(
           [userId, tokenHash, expiresAt]
         );
 
-        if (process.env.NODE_ENV !== 'production') {
+        // Send reset email via Nodemailer
+        sendPasswordResetEmail(email, resetToken).catch((err) => {
+          console.warn('[Auth] Password reset email dispatch notice:', err.message);
+        });
+
+        // Only return resetToken in response during automated test execution
+        if (process.env.NODE_ENV === 'test') {
           devResetToken = resetToken;
         }
       }
 
       res.json({
         message:
-          'If an account with that email exists, a password reset token has been issued',
+          'If an account with that email exists, a password reset token has been sent to your email.',
         ...(devResetToken ? { resetToken: devResetToken } : {}),
       });
     } catch (err) {
