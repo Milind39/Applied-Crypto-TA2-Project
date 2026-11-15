@@ -112,6 +112,8 @@ sequenceDiagram
 Applied-Crypto-TA2-Project/
 ├── README.md
 ├── .gitignore
+├── DB_Structure_Import/                # Pre-exported MariaDB schema dump
+│   └── mariadb_struct.sql              # Database structure export for quick import
 ├── docs/
 │   ├── architecture.md                 # System diagram, DB schema, REST & Socket.IO API reference
 │   ├── cryptography.md                 # Sequence diagrams, key sizes, KDF, AEAD & CRL specs
@@ -188,6 +190,30 @@ FLUSH PRIVILEGES;
 ```
 
 On server startup, `initDatabase()` in [`server/src/db.ts`](server/src/db.ts) automatically creates all 8 tables (`users`, `verification_tokens`, `certificates`, `conversations`, `messages`, `sessions`, `key_backups`, `password_resets`) and indexes.
+
+#### Importing a Database
+A pre-exported database schema is available in [`DB_Structure_Import/mariadb_struct.sql`](DB_Structure_Import/mariadb_struct.sql).
+
+First, create a new empty database for the import. Then, run the import command:
+
+```bash
+mariadb -u username -p new_database_name < dump_filename.sql
+```
+
+- Replace `username` with your database user (e.g., `toji`).
+- Replace `new_database_name` with the target database (which must exist, e.g., `pqmessenger`).
+- Replace `dump_filename.sql` with the path to the exported SQL file (e.g., `DB_Structure_Import/mariadb_struct.sql`).
+
+#### Exporting a Database
+Run the following command in your terminal to export the database structure and data:
+
+```bash
+mariadb-dump -u username -p database_name > dump_filename.sql
+```
+
+- Replace `username` with your database user.
+- Replace `database_name` with the name of the database to export (e.g., `pqmessenger`).
+- Replace `dump_filename.sql` with your desired output file name.
 
 ### 2. Configure Environment (`server/.env`)
 
